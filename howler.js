@@ -1,5 +1,5 @@
 /*!
- *  howler.js v1.1.25
+ *  howler.js v1.1.20
  *  howlerjs.com
  *
  *  (c) 2013-2014, James Simpson of GoldFire Studios
@@ -48,15 +48,12 @@
   }
 
   // create global controller
-  var HowlerGlobal = function(codecs) {
+  var HowlerGlobal = function() {
     this._volume = 1;
     this._muted = false;
     this.usingWebAudio = usingWebAudio;
-    this.ctx = ctx;
     this.noAudio = noAudio;
     this._howls = [];
-    this._codecs = codecs;
-    this.iOSAutoEnable = true;
   };
   HowlerGlobal.prototype = {
     /**
@@ -135,89 +132,26 @@
           }
         }
       }
-    },
-
-    /**
-     * Check for codec support.
-     * @param  {String} ext Audio file extention.
-     * @return {Boolean}
-     */
-    codecs: function(ext) {
-      return this._codecs[ext];
-    },
-
-    /**
-     * iOS will only allow audio to be played after a user interaction.
-     * Attempt to automatically unlock audio on the first user interaction.
-     * Concept from: http://paulbakaus.com/tutorials/html5/web-audio-on-ios/
-     * @return {Howler}
-     */
-    _enableiOSAudio: function() {
-      var self = this;
-
-      // only run this on iOS if audio isn't already eanbled
-      if (ctx && (self._iOSEnabled || !/iPhone|iPad|iPod/i.test(navigator.userAgent))) {
-        return;
-      }
-
-      self._iOSEnabled = false;
-
-      // call this method on touch start to create and play a buffer,
-      // then check if the audio actually played to determine if
-      // audio has now been unlocked on iOS
-      var unlock = function() {
-        // create an empty buffer
-        var buffer = ctx.createBuffer(1, 1, 22050);
-        var source = ctx.createBufferSource();
-        source.buffer = buffer;
-        source.connect(ctx.destination);
-
-        // play the empty buffer
-        if (typeof source.start === 'undefined') {
-          source.noteOn(0);
-        } else {
-          source.start(0);
-        }
-
-        // setup a timeout to check that we are unlocked on the next event loop
-        setTimeout(function() {
-          if ((source.playbackState === source.PLAYING_STATE || source.playbackState === source.FINISHED_STATE)) {
-            // update the unlocked state and prevent this check from happening again
-            self._iOSEnabled = true;
-            self.iOSAutoEnable = false;
-
-            // remove the touch start listener
-            window.removeEventListener('touchstart', unlock, false);
-          }
-        }, 0);
-      };
-
-      // setup a touch start listener to attempt an unlock in
-      window.addEventListener('touchstart', unlock, false);
-
-      return self;
     }
   };
 
+  // allow access to the global audio controls
+  var Howler = new HowlerGlobal();
+
   // check for browser codec support
   var audioTest = null;
-  var codecs = {};
   if (!noAudio) {
     audioTest = new Audio();
-    codecs = {
+    var codecs = {
       mp3: !!audioTest.canPlayType('audio/mpeg;').replace(/^no$/, ''),
       opus: !!audioTest.canPlayType('audio/ogg; codecs="opus"').replace(/^no$/, ''),
       ogg: !!audioTest.canPlayType('audio/ogg; codecs="vorbis"').replace(/^no$/, ''),
       wav: !!audioTest.canPlayType('audio/wav; codecs="1"').replace(/^no$/, ''),
-      aac: !!audioTest.canPlayType('audio/aac;').replace(/^no$/, ''),
-      m4a: !!(audioTest.canPlayType('audio/x-m4a;') || audioTest.canPlayType('audio/m4a;') || audioTest.canPlayType('audio/aac;')).replace(/^no$/, ''),
-      mp4: !!(audioTest.canPlayType('audio/x-mp4;') || audioTest.canPlayType('audio/mp4;') || audioTest.canPlayType('audio/aac;')).replace(/^no$/, ''),
+      m4a: !!(audioTest.canPlayType('audio/x-m4a;') || audioTest.canPlayType('audio/aac;')).replace(/^no$/, ''),
+      mp4: !!(audioTest.canPlayType('audio/x-mp4;') || audioTest.canPlayType('audio/aac;')).replace(/^no$/, ''),
       weba: !!audioTest.canPlayType('audio/webm; codecs="vorbis"').replace(/^no$/, '')
     };
   }
-
-  // allow access to the global audio controls
-  var Howler = new HowlerGlobal(codecs);
 
   // setup the audio object
   var Howl = function(o) {
@@ -260,11 +194,6 @@
       self._setupAudioNode();
     }
 
-    // automatically try to enable audio on iOS
-    if (typeof ctx !== 'undefined' && ctx && Howler.iOSAutoEnable) {
-      Howler._enableiOSAudio();
-    }
-
     // add this to an array of Howl's to allow global control
     Howler._howls.push(self);
 
@@ -297,14 +226,12 @@
           ext = self._format;
         } else {
           // figure out the filetype (whether an extension or base64 data)
-          urlItem = self._urls[i];
-          ext = /^data:audio\/([^;,]+);/i.exec(urlItem);
-          if (!ext) {
-            ext = /\.([^.]+)$/.exec(urlItem.split('?', 1)[0]);
-          }
+          urlItem = self._urls[i].toLowerCase().split('?')[0];
+          ext = urlItem.match(/.+\.([^?]+)(\?|$)/);
+          ext = (ext && ext.length >= 2) ? ext : urlItem.match(/data\:audio\/([^?]+);/);
 
           if (ext) {
-            ext = ext[1].toLowerCase();
+            ext = ext[1];
           } else {
             self.on('loaderror');
             return;
@@ -345,6 +272,9 @@
         newNode._pos = 0;
         newNode.preload = 'auto';
         newNode.volume = (Howler._muted) ? 0 : self._volume * Howler.volume();
+
+        // add this sound to the cache
+        cache[url] = self;
 
         // setup the event listener to start playing the sound
         // as soon as it has buffered enough
@@ -436,18 +366,8 @@
         node._sprite = sprite;
 
         // determine where to start playing from
-        var pos = (node._pos > 0) ? node._pos : self._sprite[sprite][0] / 1000;
-
-        // determine how long to play for
-        var duration = 0;
-        if (self._webAudio) {
+        var pos = (node._pos > 0) ? node._pos : self._sprite[sprite][0] / 1000,
           duration = self._sprite[sprite][1] / 1000 - node._pos;
-          if (node._pos > 0) {
-            pos = self._sprite[sprite][0] / 1000 + pos;
-          }
-        } else {
-          duration = self._sprite[sprite][1] / 1000 - (pos - self._sprite[sprite][0] / 1000);
-        }
 
         // determine if this sound should be looped
         var loop = !!(self._loop || self._sprite[sprite][2]);
@@ -471,9 +391,6 @@
             if (self._webAudio && !loop) {
               self._nodeById(data.id).paused = true;
               self._nodeById(data.id)._pos = 0;
-
-              // clear the end timer
-              self._clearEndTimer(data.id);
             }
 
             // end the track if it is HTML audio and a sprite
@@ -499,6 +416,10 @@
           refreshBuffer(self, [loop, loopStart, loopEnd], soundId);
           self._playStart = ctx.currentTime;
           node.gain.value = self._volume;
+
+          if (typeof node.bufferSource  === 'undefined') {
+            return;
+          }
 
           if (typeof node.bufferSource.start === 'undefined') {
             node.bufferSource.noteGrainOn(0, pos, duration);
@@ -731,6 +652,23 @@
       } else {
         return self._volume;
       }
+    },
+
+    filter: function(freq, id){
+      var self = this;
+
+      // make sure gain is a number
+      freq = parseFloat(freq);
+
+      self._freq = freq;
+
+      var activeNode = (id) ? self._nodeById(id) : self._activeNode();
+      if (activeNode) {
+        if (self._webAudio) {
+          activeNode.filter.frequency.value = freq;
+        }
+      }
+      return self;
     },
 
     /**
@@ -1010,14 +948,9 @@
       } else {
         self.load();
         newNode = self._audioNode[self._audioNode.length - 1];
-
-        // listen for the correct load event and fire the callback
-        var listenerEvent = navigator.isCocoonJS ? 'canplaythrough' : 'loadedmetadata';
-        var listener = function() {
-          newNode.removeEventListener(listenerEvent, listener, false);
+        newNode.addEventListener(navigator.isCocoonJS ? 'canplaythrough' : 'loadedmetadata', function() {
           callback(newNode);
-        };
-        newNode.addEventListener(listenerEvent, listener, false);
+        });
       }
     },
 
@@ -1091,14 +1024,25 @@
       node[index].gain.value = self._volume;
       node[index].paused = true;
       node[index]._pos = 0;
-      node[index].readyState = 4;
+      node[index].readyState = 2;
       node[index].connect(masterGain);
 
       // create the panner
       node[index].panner = ctx.createPanner();
       node[index].panner.panningModel = self._model || 'equalpower';
       node[index].panner.setPosition(self._pos3d[0], self._pos3d[1], self._pos3d[2]);
-      node[index].panner.connect(node[index]);
+
+      // create low pass filter
+      node[index].filter = ctx.createBiquadFilter();
+      node[index].filter.type = "lowpass";
+      node[index].filter.frequency.value = 880;
+      node[index].filter.Q.value = 0;
+      node[index].filter.gain.value = 0;
+
+      node[index].panner.connect(node[index].filter);
+      node[index].filter.connect(node[index]);
+
+      //node[index].panner.connect(node[index]);
 
       return node[index];
     },
@@ -1137,18 +1081,14 @@
     off: function(event, fn) {
       var self = this,
         events = self['_on' + event],
-        fnString = fn ? fn.toString() : null;
+        fnString = fn.toString();
 
-      if (fnString) {
-        // loop through functions in the event for comparison
-        for (var i=0; i<events.length; i++) {
-          if (fnString === events[i].toString()) {
-            events.splice(i, 1);
-            break;
-          }
+      // loop through functions in the event for comparison
+      for (var i=0; i<events.length; i++) {
+        if (fnString === events[i].toString()) {
+          events.splice(i, 1);
+          break;
         }
-      } else {
-        self['_on' + event] = [];
       }
 
       return self;
@@ -1167,7 +1107,6 @@
         // stop the sound if it is currently playing
         if (!nodes[i].paused) {
           self.stop(nodes[i].id);
-          self.on('end', nodes[i].id);
         }
 
         if (!self._webAudio) {
@@ -1189,7 +1128,7 @@
       if (index !== null && index >= 0) {
         Howler._howls.splice(index, 1);
       }
-
+      
       // delete this sound from the cache
       delete cache[self._src];
       self = null;
@@ -1213,25 +1152,25 @@
 
         // load the sound into this object
         loadSound(obj);
-        return;
-      }
-      
-      if (/^data:[^;]+;base64,/.test(url)) {
-        // Decode base64 data-URIs because some browsers cannot load data-URIs with XMLHttpRequest.
-        var data = atob(url.split(',')[1]);
-        var dataView = new Uint8Array(data.length);
-        for (var i=0; i<data.length; ++i) {
-          dataView[i] = data.charCodeAt(i);
-        }
-        
-        decodeAudioData(dataView.buffer, obj, url);
       } else {
         // load the buffer from the URL
         var xhr = new XMLHttpRequest();
         xhr.open('GET', url, true);
         xhr.responseType = 'arraybuffer';
         xhr.onload = function() {
-          decodeAudioData(xhr.response, obj, url);
+          // decode the buffer into an audio source
+          ctx.decodeAudioData(
+            xhr.response,
+            function(buffer) {
+              if (buffer) {
+                cache[url] = buffer;
+                loadSound(obj, buffer);
+              }
+            },
+            function(err) {
+              obj.on('loaderror');
+            }
+          );
         };
         xhr.onerror = function() {
           // if there is an error, switch the sound to HTML Audio
@@ -1240,7 +1179,6 @@
             obj._webAudio = false;
             obj._audioNode = [];
             delete obj._gainNode;
-            delete cache[url];
             obj.load();
           }
         };
@@ -1250,28 +1188,6 @@
           xhr.onerror();
         }
       }
-    };
-
-    /**
-     * Decode audio data from an array buffer.
-     * @param  {ArrayBuffer} arraybuffer The audio data.
-     * @param  {Object} obj The Howl object for the sound to load.
-     * @param  {String} url The path to the sound file.
-     */
-    var decodeAudioData = function(arraybuffer, obj, url) {
-      // decode the buffer into an audio source
-      ctx.decodeAudioData(
-        arraybuffer,
-        function(buffer) {
-          if (buffer) {
-            cache[url] = buffer;
-            loadSound(obj, buffer);
-          }
-        },
-        function(err) {
-          obj.on('loaderror');
-        }
-      );
     };
 
     /**
@@ -1308,6 +1224,10 @@
     var refreshBuffer = function(obj, loop, id) {
       // determine which node to connect to
       var node = obj._nodeById(id);
+
+      if (typeof cache[obj._src] === "undefined"){
+        return;
+      }
 
       // setup the buffer source for playback
       node.bufferSource = ctx.createBufferSource();
